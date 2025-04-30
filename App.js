@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Alert, 
-  Button, 
-  StyleSheet, 
-  Text, 
+import {
+  Alert,
+  Button,
+  StyleSheet,
+  Text,
   TouchableOpacity,
   View,
   FlatList,
@@ -21,15 +21,31 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Working on getting this from a backend
 const DEFAULT_USERNAME = "guest" + Math.floor(Math.random() * 10000);
+console.log("User ID:", DEFAULT_USERNAME);
+function generateUniqueColor(seedString) {
+  let hash = 0;
+  for (let i = 0; i < seedString.length; i++) {
+    hash = seedString.charCodeAt(i) + ((hash << 5) - hash);
+  }
+
+  const h = Math.abs(hash) % 360;
+  const s = 65 + (Math.abs(hash) % 20);  // 65–85%
+  const l = 55 + (Math.abs(hash) % 10);  // 55–65%
+
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
 
 export default function App() {
   // State variables
+  const uniqueColor = generateUniqueColor(DEFAULT_USERNAME);
+
   const [user, setUser] = useState({
     id: DEFAULT_USERNAME,
     displayName: "Player1",
     score: 0,
-    color: "#4a90e2"
+    color: uniqueColor
   });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentPosition, setCurrentPosition] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedPath, setRecordedPath] = useState([]);
@@ -37,24 +53,28 @@ export default function App() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboardData, setLeaderboardData] = useState([
-    { id: "player1", displayName: "GeoMaster", score: 1250, territories: 5 },
-    { id: "player2", displayName: "WalkingKing", score: 980, territories: 3 },
-    { id: DEFAULT_USERNAME, displayName: "Player1", score: 450, territories: 2 },
-    { id: "player3", displayName: "AreaHunter", score: 420, territories: 1 }
+    {id: "player1", displayName: "GeoMaster", score: 1250, territories: 5},
+    {id: "player2", displayName: "WalkingKing", score: 980, territories: 3},
+    {id: DEFAULT_USERNAME, displayName: "Player1", score: 450, territories: 2},
+    {id: "player3", displayName: "AreaHunter", score: 420, territories: 1}
   ]);
+  const [territoryFilter, setTerritoryFilter] = useState("all"); // "all" or "mine"
+  const filteredTerritories = territoryFilter === "mine"
+      ? territories.filter(t => t.owner === user.id)
+      : territories;
   const [locationPermission, setLocationPermission] = useState(null);
   const [region, setRegion] = useState({
-    latitude: 43.6150,  
+    latitude: 43.6150,
     longitude: -116.2023,
     latitudeDelta: 0.0122,
     longitudeDelta: 0.0121,
   });
-  
+
   // Reference for map
   const mapRef = useRef(null);
-  
+
   // Get device dimensions
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const {width: screenWidth, height: screenHeight} = useWindowDimensions();
   const isLandscape = screenWidth > screenHeight;
 
   // Location tracking interval
@@ -62,12 +82,22 @@ export default function App() {
 
   // Load initial data when component mounts
   useEffect(() => {
-    // Request location permissions and load saved data
-    requestLocationPermission();
-    loadSavedData();
-    
+    const tryAutoLogin = async () => {
+      const saved = await AsyncStorage.getItem('geoconquest_data');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.user) {
+          setUser(parsed.user);
+          setIsAuthenticated(true);
+        }
+      }
+      await requestLocationPermission();
+      await loadSavedData(); // You might want to load again after login
+    };
+
+    tryAutoLogin();
+
     return () => {
-      // Clean up location tracking on unmount
       if (locationInterval.current) {
         clearInterval(locationInterval.current);
       }
@@ -77,9 +107,9 @@ export default function App() {
   // Request location permission
   const requestLocationPermission = async () => {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
+      const {status} = await Location.requestForegroundPermissionsAsync();
       setLocationPermission(status === 'granted' ? 'granted' : 'denied');
-      
+
       if (status === 'granted') {
         // Start tracking current position
         updateCurrentPosition();
@@ -96,10 +126,10 @@ export default function App() {
       const location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High
       });
-      
-      const { latitude, longitude } = location.coords;
-      setCurrentPosition({ latitude, longitude });
-      
+
+      const {latitude, longitude} = location.coords;
+      setCurrentPosition({latitude, longitude});
+
       // Move map to current location initially
       if (mapRef.current && !isRecording) {
         mapRef.current.animateToRegion({
@@ -109,7 +139,7 @@ export default function App() {
           longitudeDelta: 0.005
         });
       }
-      
+
     } catch (error) {
       console.error("Error getting current location:", error);
     }
@@ -121,32 +151,32 @@ export default function App() {
       Alert.alert("Permission Required", "Location permission is needed to capture territory.");
       return;
     }
-    
+
     // Reset path
     setRecordedPath([]);
     setIsRecording(true);
-    
+
     // Start tracking location at regular intervals
     locationInterval.current = setInterval(async () => {
       try {
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High
         });
-        
-        const { latitude, longitude } = location.coords;
-        setCurrentPosition({ latitude, longitude });
-        
+
+        const {latitude, longitude} = location.coords;
+        setCurrentPosition({latitude, longitude});
+
         // Add point to path if recording
-        setRecordedPath(prevPath => [...prevPath, { latitude, longitude }]);
-        
+        setRecordedPath(prevPath => [...prevPath, {latitude, longitude}]);
+
       } catch (error) {
         console.error("Error tracking location:", error);
       }
     }, 2000); // Update every 2 seconds - adjust based on testing
-    
+
     Alert.alert(
-      "Territory Capture Started", 
-      "Walk around the area you want to claim. The app will track your path."
+        "Territory Capture Started",
+        "Walk around the area you want to claim. The app will track your path."
     );
   };
 
@@ -157,21 +187,21 @@ export default function App() {
       clearInterval(locationInterval.current);
       locationInterval.current = null;
     }
-    
+
     setIsRecording(false);
-    
+
     // Check if we have enough points for a territory
     if (recordedPath.length < 3) {
       Alert.alert(
-        "Capture Failed", 
-        "Not enough points to create a territory. Need at least 3 points."
+          "Capture Failed",
+          "Not enough points to create a territory. Need at least 3 points."
       );
       return;
     }
-    
+
     // Close the loop if needed
     let finalPath = [...recordedPath];
-    
+
     // If the end point is not close to the start point, add the start point to close the polygon
     const startPoint = recordedPath[0];
     const endPoint = recordedPath[recordedPath.length - 1];
@@ -189,7 +219,7 @@ export default function App() {
     const area = calculatePolygonArea(finalPath);
     const areaInSquareMeters = Math.abs(area);
     const points = Math.floor(areaInSquareMeters / 100); // 1 point per 100 sq meters
-    
+
     // Create new territory
     const newTerritory = {
       id: Date.now().toString(),
@@ -202,49 +232,49 @@ export default function App() {
       points: points,
       captureDate: new Date().toISOString()
     };
-    
+
     // Add territory and update user score
     setTerritories(prev => [...prev, newTerritory]);
     setUser(prev => ({
       ...prev,
       score: prev.score + points
     }));
-    
+
     // Update leaderboard
     updateLeaderboard(points);
-    
+
     // Save data
     saveData();
-    
+
     Alert.alert(
-      "Territory Captured!", 
-      `You've claimed ${areaInSquareMeters.toFixed(0)} sq meters worth ${points} points!`
+        "Territory Captured!",
+        `You've claimed ${areaInSquareMeters.toFixed(0)} sq meters worth ${points} points!`
     );
   };
 
-  // Calculate polygon area 
+  // Calculate polygon area
   const calculatePolygonArea = (vertices) => {
     // Convert lat/long to meters using  approximation
     // This is a simplified calculation and not perfect for large areas
     const earthRadius = 6371000; // meters
-    
+
     const metersVertices = vertices.map(point => {
       const latRad = (point.latitude * Math.PI) / 180;
       const lngRad = (point.longitude * Math.PI) / 180;
-      
+
       // Simple approximation - not accurate for large distances
       const x = earthRadius * lngRad * Math.cos(latRad);
       const y = earthRadius * latRad;
-      
-      return { x, y };
+
+      return {x, y};
     });
-    
+
     let area = 0;
     for (let i = 0, j = metersVertices.length - 1; i < metersVertices.length; j = i++) {
-      area += (metersVertices[j].x + metersVertices[i].x) * 
-              (metersVertices[j].y - metersVertices[i].y);
+      area += (metersVertices[j].x + metersVertices[i].x) *
+          (metersVertices[j].y - metersVertices[i].y);
     }
-    
+
     return area / 2;
   };
 
@@ -262,27 +292,27 @@ export default function App() {
         }
         return player;
       });
-      
+
       // Sort by score
       return updatedLeaderboard.sort((a, b) => b.score - a.score);
     });
   };
 
   // Save data to storage
-  const saveData = async () => {
+  const saveData = async (updatedUser = user, updatedTerritories = territories, updatedLeaderboard = leaderboardData) => {
     try {
       const data = {
-        user,
-        territories,
-        leaderboard: leaderboardData
+        user: updatedUser,
+        territories: updatedTerritories,
+        leaderboard: updatedLeaderboard
       };
 
       // Save locally
       await AsyncStorage.setItem('geoconquest_data', JSON.stringify(data));
       console.log("Data saved locally");
 
-      // Save to server using professor's URL
-      await fetch(`https://mec402.boisestate.edu/csclasses/cs402/project/savejson.php?user=${user.id}`, {
+      // Save to server
+      await fetch(`https://mec402.boisestate.edu/csclasses/cs402/project/savejson.php?user=${encodeURIComponent(data.user.id)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -291,7 +321,6 @@ export default function App() {
       });
 
       console.log("Data saved to server");
-
     } catch (error) {
       console.error("Error saving data:", error);
     }
@@ -300,55 +329,97 @@ export default function App() {
   // Load saved data from storage
   const loadSavedData = async () => {
     try {
-      // Try loading from server first
-      const response = await fetch(`https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${user.id}`);
-      const text = await response.text();
-
+      // 1. Try to load current user's data from server
+      let currentUserData = null;
       try {
-        const cloudData = JSON.parse(text);
+        const response = await fetch(
+            `https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${user.id}`
+        );
 
-        if (cloudData) {
-          setUser(cloudData.user || user);
-          setTerritories(cloudData.territories || []);
-          setLeaderboardData(cloudData.leaderboard || leaderboardData);
-          console.log("Loaded data from server.");
+        if (!response.ok) {
+          throw new Error(`Server returned ${response.status}`);
         }
-      } catch (err) {
-        console.error("Server response is not valid JSON:", text);
+
+        const responseText = await response.text();
+
+        if (!responseText || responseText.trim() === '') {
+          console.log("Received empty response from server");
+          throw new Error("Empty response from server");
+        }
+
+        currentUserData = JSON.parse(responseText);
+      } catch (serverError) {
+        console.warn("Failed to load server data:", serverError);
+        // Fall back to local data
+        try {
+          const localData = await AsyncStorage.getItem('geoconquest_data');
+          if (localData) {
+            currentUserData = JSON.parse(localData);
+            console.log("Loaded data from local storage");
+          }
+        } catch (localError) {
+          console.error("Failed to load local data:", localError);
+        }
       }
 
-      // Also attempt to load local backup
-      const savedData = await AsyncStorage.getItem('geoconquest_data');
-      if (savedData) {
-        const parsedData = JSON.parse(savedData);
-        setUser(parsedData.user || user);
-        setTerritories(parsedData.territories || []);
-        setLeaderboardData(parsedData.leaderboard || leaderboardData);
-        console.log("Loaded local backup.");
+      // 2. Process the loaded data
+      if (currentUserData) {
+        setUser(currentUserData.user || user);
+        setTerritories(currentUserData.territories || []);
+        setLeaderboardData(currentUserData.leaderboard || leaderboardData);
+      }
+
+      // 3. Load additional territory data if needed
+      const otherUsers = Array.isArray(currentUserData?.leaderboard)
+          ? currentUserData.leaderboard
+              .map(p => p.id)
+              .filter(id => id && id !== user.id)
+          : [];
+
+      for (const uid of otherUsers) {
+        try {
+          const res = await fetch(
+              `https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${uid}`
+          );
+          const text = await res.text();
+          if (text && text.trim() !== '') {
+            const parsed = JSON.parse(text);
+            if (parsed?.territories?.length > 0) {
+              setTerritories(prev => [...prev, ...parsed.territories]);
+            }
+          }
+        } catch (err) {
+          console.warn(`Failed to load data for user ${uid}:`, err);
+        }
       }
     } catch (error) {
-      console.error("Error loading saved or server data:", error);
+      console.error("Error in loadSavedData:", error);
+      // You might want to show an alert to the user here
+      Alert.alert(
+          "Data Loading Error",
+          "Couldn't load game data. Some features might not work properly."
+      );
     }
   };
 
-  // Check if a point is inside a territory 
+  // Check if a point is inside a territory
   const isPointInPolygon = (point, polygon) => {
     let isInside = false;
     const x = point.longitude;
     const y = point.latitude;
-    
+
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
       const xi = polygon[i].longitude;
       const yi = polygon[i].latitude;
       const xj = polygon[j].longitude;
       const yj = polygon[j].latitude;
-      
+
       const intersect = ((yi > y) !== (yj > y)) &&
-        (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-        
+          (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+
       if (intersect) isInside = !isInside;
     }
-    
+
     return isInside;
   };
 
@@ -358,71 +429,71 @@ export default function App() {
       Alert.alert("Error", "Your current position is unknown.");
       return;
     }
-    
+
     // Check if player is inside the territory
     if (!isPointInPolygon(currentPosition, territory.path)) {
       Alert.alert(
-        "Cannot Attack", 
-        "You must be physically inside a territory to challenge it."
+          "Cannot Attack",
+          "You must be physically inside a territory to challenge it."
       );
       return;
     }
-    
+
     // Simulate a 50/50 chance of success
     const success = Math.random() > 0.5;
-    
+
     if (success) {
       // Capture the territory
-      setTerritories(prev => 
-        prev.map(t => {
-          if (t.id === territory.id) {
-            return {
-              ...t,
-              owner: user.id,
-              ownerName: user.displayName,
-              color: user.color
-            };
-          }
-          return t;
-        })
+      setTerritories(prev =>
+          prev.map(t => {
+            if (t.id === territory.id) {
+              return {
+                ...t,
+                owner: user.id,
+                ownerName: user.displayName,
+                color: user.color
+              };
+            }
+            return t;
+          })
       );
-      
+
       Alert.alert(
-        "Victory!", 
-        `You've successfully captured ${territory.name} from ${territory.ownerName}!`
+          "Victory!",
+          `You've successfully captured ${territory.name} from ${territory.ownerName}!`
       );
     } else {
       Alert.alert(
-        "Attack Failed", 
-        "Your challenge was unsuccessful. Try again later!"
+          "Attack Failed",
+          "Your challenge was unsuccessful. Try again later!"
       );
     }
-    
+
     saveData();
   };
 
   // Component for territory item in the list
-  const TerritoryItem = ({ item }) => {
+  const TerritoryItem = ({item}) => {
     // Calculate how long ago the territory was captured
     const getTimeAgo = (dateString) => {
       const captureDate = new Date(dateString);
       const now = new Date();
       const diffInSeconds = Math.floor((now - captureDate) / 1000);
-      
+
       if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
-      
+
       const diffInMinutes = Math.floor(diffInSeconds / 60);
       if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
-      
+
       const diffInHours = Math.floor(diffInMinutes / 60);
       if (diffInHours < 24) return `${diffInHours}h ago`;
-      
+
       const diffInDays = Math.floor(diffInHours / 24);
       if (diffInDays < 30) return `${diffInDays}d ago`;
-      
+
       return captureDate.toLocaleDateString();
     };
-    
+
     // Format area to a readable format
     const formatArea = (areaSqMeters) => {
       if (areaSqMeters < 1000) {
@@ -431,92 +502,92 @@ export default function App() {
         return `${(areaSqMeters / 1000).toFixed(1)} km²`;
       }
     };
-    
+
     return (
-      <TouchableOpacity 
-        style={styles.territoryItem}
-        onPress={() => {
-          // Center map on this territory
-          const center = findCenterOfPolygon(item.path);
-          moveToLocation(center.latitude, center.longitude, 0.005);
-        }}
-        onLongPress={() => {
-          // If it's not the user's territory, offer to attack it
-          if (item.owner !== user.id) {
-            Alert.alert(
-              "Challenge Territory",
-              `Do you want to try to capture ${item.name} from ${item.ownerName}?`,
-              [
-                { text: "Cancel", style: "cancel" },
-                { 
-                  text: "Attack!", 
-                  style: "destructive",
-                  onPress: () => attackTerritory(item) 
-                }
-              ]
-            );
-          } else {
-            // If it's the user's territory, show options (rename, etc)
-            Alert.alert(
-              "Manage Territory",
-              `What would you like to do with ${item.name}?`,
-              [
-                { text: "Cancel", style: "cancel" },
-                { 
-                  text: "Rename", 
-                  onPress: () => {
-                    // Implement territory renaming functionality
-                    Alert.alert("Coming soon", "Renaming will be available in the next update!");
-                  } 
-                }
-              ]
-            );
-          }
-        }}
-      >
-        <View style={[styles.territoryColorBadge, { backgroundColor: item.color }]} />
-        
-        <View style={styles.territoryItemContent}>
-          <View style={styles.territoryItemHeader}>
-            <Text style={styles.territoryItemName}>{item.name}</Text>
-            <View style={styles.territoryPointsContainer}>
-              <Text style={styles.territoryItemPoints}>{item.points}</Text>
+        <TouchableOpacity
+            style={styles.territoryItem}
+            onPress={() => {
+              // Center map on this territory
+              const center = findCenterOfPolygon(item.path);
+              moveToLocation(center.latitude, center.longitude, 0.005);
+            }}
+            onLongPress={() => {
+              // If it's not the user's territory, offer to attack it
+              if (item.owner !== user.id) {
+                Alert.alert(
+                    "Challenge Territory",
+                    `Do you want to try to capture ${item.name} from ${item.ownerName}?`,
+                    [
+                      {text: "Cancel", style: "cancel"},
+                      {
+                        text: "Attack!",
+                        style: "destructive",
+                        onPress: () => attackTerritory(item)
+                      }
+                    ]
+                );
+              } else {
+                // If it's the user's territory, show options (rename, etc)
+                Alert.alert(
+                    "Manage Territory",
+                    `What would you like to do with ${item.name}?`,
+                    [
+                      {text: "Cancel", style: "cancel"},
+                      {
+                        text: "Rename",
+                        onPress: () => {
+                          // Implement territory renaming functionality
+                          Alert.alert("Coming soon", "Renaming will be available in the next update!");
+                        }
+                      }
+                    ]
+                );
+              }
+            }}
+        >
+          <View style={[styles.territoryColorBadge, {backgroundColor: item.color}]}/>
+
+          <View style={styles.territoryItemContent}>
+            <View style={styles.territoryItemHeader}>
+              <Text style={styles.territoryItemName}>{item.name}</Text>
+              <View style={styles.territoryPointsContainer}>
+                <Text style={styles.territoryItemPoints}>{item.points}</Text>
+              </View>
             </View>
-          </View>
-          
-          <View style={styles.territoryItemRow}>
-            <View style={styles.territoryOwnerSection}>
-              <FontAwesome 
-                name={item.owner === user.id ? "user" : "user-o"} 
-                size={12} 
-                color={item.owner === user.id ? "#2ecc71" : "#7f8c8d"} 
-              />
-              <Text 
-                style={[
-                  styles.territoryItemOwner,
-                  item.owner === user.id ? styles.ownTerritoryText : {}
-                ]}
-              >
-                {item.owner === user.id ? "You" : item.ownerName}
+
+            <View style={styles.territoryItemRow}>
+              <View style={styles.territoryOwnerSection}>
+                <FontAwesome
+                    name={item.owner === user.id ? "user" : "user-o"}
+                    size={12}
+                    color={item.owner === user.id ? "#2ecc71" : "#7f8c8d"}
+                />
+                <Text
+                    style={[
+                      styles.territoryItemOwner,
+                      item.owner === user.id ? styles.ownTerritoryText : {}
+                    ]}
+                >
+                  {item.owner === user.id ? "You" : item.ownerName}
+                </Text>
+              </View>
+
+              <View style={styles.territoryDetailsSection}>
+                <FontAwesome name="map-o" size={12} color="#7f8c8d"/>
+                <Text style={styles.territoryItemDetails}>
+                  {formatArea(item.area)}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.territoryCaptureInfo}>
+              <FontAwesome name="clock-o" size={12} color="#7f8c8d"/>
+              <Text style={styles.territoryCaptureTime}>
+                {getTimeAgo(item.captureDate)}
               </Text>
             </View>
-            
-            <View style={styles.territoryDetailsSection}>
-              <FontAwesome name="map-o" size={12} color="#7f8c8d" />
-              <Text style={styles.territoryItemDetails}>
-                {formatArea(item.area)}
-              </Text>
-            </View>
           </View>
-          
-          <View style={styles.territoryCaptureInfo}>
-            <FontAwesome name="clock-o" size={12} color="#7f8c8d" />
-            <Text style={styles.territoryCaptureTime}>
-              {getTimeAgo(item.captureDate)}
-            </Text>
-          </View>
-        </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
     );
   };
 
@@ -524,12 +595,12 @@ export default function App() {
   const findCenterOfPolygon = (points) => {
     let sumLat = 0;
     let sumLng = 0;
-    
+
     points.forEach(point => {
       sumLat += point.latitude;
       sumLng += point.longitude;
     });
-    
+
     return {
       latitude: sumLat / points.length,
       longitude: sumLng / points.length
@@ -550,85 +621,75 @@ export default function App() {
 
   // Leaderboard modal component
   const LeaderboardModal = () => (
-    <Modal
-      visible={showLeaderboard}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={() => setShowLeaderboard(false)}
-    >
-      <TouchableOpacity 
-        style={styles.modalOverlay}
-        activeOpacity={1}
-        onPress={() => setShowLeaderboard(false)}
+      <Modal
+          visible={showLeaderboard}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowLeaderboard(false)}
       >
-        <TouchableOpacity 
-          activeOpacity={1}
-          onPress={e => e.stopPropagation()}
-          style={[styles.modalContent, styles.leaderboardModal]}
+        <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowLeaderboard(false)}
         >
-          <View style={styles.modalHeader}>
-            <View style={styles.leaderboardHeaderContent}>
-              <FontAwesome name="trophy" size={24} color="#f1c40f" />
-              <Text style={styles.modalTitle}>Leaderboard</Text>
-            </View>
-            <TouchableOpacity 
-              style={styles.closeButton}
-              onPress={() => setShowLeaderboard(false)}
-            >
-              <FontAwesome name="close" size={20} color="#fff" />
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.leaderboardHeaderRow}>
-            <Text style={styles.leaderboardHeaderText}>Rank</Text>
-            <Text style={[styles.leaderboardHeaderText, { flex: 1 }]}>Player</Text>
-            <Text style={styles.leaderboardHeaderText}>Score</Text>
-          </View>
-          
-          <FlatList
-            data={leaderboardData}
-            keyExtractor={(item) => item.id}
-            showsVerticalScrollIndicator={false}
-            renderItem={({ item, index }) => (
-              <View style={[
-                styles.leaderboardItem, 
-                item.id === user.id ? styles.currentUserItem : null,
-              ]}>
-                <View style={[
-                  styles.rankBadge,
-                  index === 0 ? styles.firstPlace : 
-                  index === 1 ? styles.secondPlace :
-                  index === 2 ? styles.thirdPlace : null
-                ]}>
-                  <Text style={styles.leaderboardRank}>
-                    {index < 3 ? 
-                      <FontAwesome 
-                        name="star" 
-                        size={12} 
-                        color="#fff" 
-                      /> : 
-                      `${index + 1}`
-                    }
-                  </Text>
-                </View>
-                
-                <View style={styles.leaderboardUserInfo}>
-                  <Text style={styles.leaderboardUsername}>{item.displayName}</Text>
-                  <Text style={styles.leaderboardDetails}>
-                    {item.territories} {item.territories === 1 ? 'territory' : 'territories'}
-                  </Text>
-                </View>
-                
-                <View style={styles.scoreContainer}>
-                  <Text style={styles.scoreValue}>{item.score}</Text>
-                  <Text style={styles.scoreLabel}>pts</Text>
-                </View>
+          <TouchableOpacity
+              activeOpacity={1}
+              onPress={e => e.stopPropagation()}
+              style={[styles.modalContent, styles.leaderboardModal]}
+          >
+            <View style={styles.modalHeader}>
+              <View style={styles.leaderboardHeaderContent}>
+                <FontAwesome name="trophy" size={24} color="#f1c40f" />
+                <Text style={styles.modalTitle}>Leaderboard</Text>
               </View>
-            )}
-          />
+              <TouchableOpacity
+                  style={styles.closeButton}
+                  onPress={() => setShowLeaderboard(false)}
+              >
+                <FontAwesome name="close" size={20} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.leaderboardHeaderRow}>
+              <Text style={styles.leaderboardHeaderText}>Rank</Text>
+              <Text style={[styles.leaderboardHeaderText, {flex: 1}]}>Player</Text>
+              <Text style={styles.leaderboardHeaderText}>Score</Text>
+            </View>
+
+            <FlatList
+                data={leaderboardData}
+                keyExtractor={(item) => item.id}
+                showsVerticalScrollIndicator={false}
+                renderItem={({item, index}) => (
+                    <View style={[
+                      styles.leaderboardItem,
+                      item.id === user.id ? styles.currentUserItem : null,
+                    ]}>
+                      <View style={styles.rankBadge}>
+                        {index < 3 ? (
+                            <FontAwesome name="star" size={12} color="#fff" />
+                        ) : (
+                            <Text style={styles.leaderboardRank}>{index + 1}</Text>
+                        )}
+                      </View>
+
+                      <View style={styles.leaderboardUserInfo}>
+                        <Text style={styles.leaderboardUsername}>{item.displayName}</Text>
+                        <Text style={styles.leaderboardDetails}>
+                          {item.territories} {item.territories === 1 ? 'territory' : 'territories'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.scoreContainer}>
+                        <Text style={styles.scoreValue}>{item.score}</Text>
+                        <Text style={styles.scoreLabel}>pts</Text>
+                      </View>
+                    </View>
+                )}
+            />
+          </TouchableOpacity>
         </TouchableOpacity>
-      </TouchableOpacity>
-    </Modal>
+      </Modal>
   );
 
   // Profile modal component
@@ -636,266 +697,343 @@ export default function App() {
     // Local state for form inputs to prevent modal from closing
     const [displayName, setDisplayName] = useState(user.displayName);
     const [id, setId] = useState(user.id);
-    const [selectedColor, setSelectedColor] = useState(user.color);
-    
+    const handleLogout = async () => {
+      await AsyncStorage.removeItem('geoconquest_data');
+      setIsAuthenticated(false);
+      setUser({
+        id: DEFAULT_USERNAME,
+        displayName: "Player1",
+        score: 0,
+        color: generateUniqueColor(DEFAULT_USERNAME)
+      });
+    };
     // Save changes function
     const saveChanges = () => {
-      setUser(prev => ({
-        ...prev,
-        displayName: displayName,
-        color: selectedColor
-      }));
-      saveData();
+      const updatedUser = {
+        ...user,
+        displayName: displayName
+        // No longer updating color
+      };
+
+      const updatedLeaderboard = leaderboardData.map(player =>
+          player.id === user.id
+              ? {...player, displayName: displayName}
+              : player
+      );
+
+      const updatedTerritories = territories.map(t =>
+          t.owner === user.id
+              ? {...t, ownerName: displayName}
+              : t
+      );
+
+      setUser(updatedUser);
+      setLeaderboardData(updatedLeaderboard);
+      setTerritories(updatedTerritories);
+
+      saveData(updatedUser, updatedTerritories, updatedLeaderboard);
       setShowProfileModal(false);
     };
-    
+
     return (
-      <Modal
-        visible={showProfileModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowProfileModal(false)}
-      >
-        <TouchableOpacity 
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowProfileModal(false)}
+        <Modal
+            visible={showProfileModal}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={() => setShowProfileModal(false)}
         >
-          <TouchableOpacity 
-            activeOpacity={1}
-            onPress={e => e.stopPropagation()}
-            style={styles.modalContent}
+          <TouchableOpacity
+              style={styles.modalOverlay}
+              activeOpacity={1}
+              onPress={() => setShowProfileModal(false)}
           >
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Your Profile</Text>
-              <TouchableOpacity onPress={() => setShowProfileModal(false)}>
-                <FontAwesome name="close" size={24} color="#333" />
-              </TouchableOpacity>
-            </View>
-            
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.profileAvatar}>
-                <View style={styles.avatarCircle}>
-                  <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
-                </View>
+            <TouchableOpacity
+                activeOpacity={1}
+                onPress={e => e.stopPropagation()}
+                style={styles.modalContent}
+            >
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Your Profile</Text>
+                <TouchableOpacity onPress={() => setShowProfileModal(false)}>
+                  <FontAwesome name="close" size={24} color="#333"/>
+                </TouchableOpacity>
               </View>
-              
-              <View style={styles.profileStats}>
-                <View style={styles.profileStatItem}>
-                  <Text style={styles.profileStatValue}>{user.score}</Text>
-                  <Text style={styles.profileStatLabel}>Total Points</Text>
+
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={styles.profileAvatar}>
+                  <View style={styles.avatarCircle}>
+                    <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
+                  </View>
                 </View>
-                <View style={styles.profileStatItem}>
-                  <Text style={styles.profileStatValue}>
-                    {territories.filter(t => t.owner === user.id).length}
-                  </Text>
-                  <Text style={styles.profileStatLabel}>Territories</Text>
+
+                <View style={styles.profileStats}>
+                  <View style={styles.profileStatItem}>
+                    <Text style={styles.profileStatValue}>{user.score}</Text>
+                    <Text style={styles.profileStatLabel}>Total Points</Text>
+                  </View>
+                  <View style={styles.profileStatItem}>
+                    <Text style={styles.profileStatValue}>
+                      {territories.filter(t => t.owner === user.id).length}
+                    </Text>
+                    <Text style={styles.profileStatLabel}>Territories</Text>
+                  </View>
+                  <View style={styles.profileStatItem}>
+                    <Text style={styles.profileStatValue}>
+                      {leaderboardData.findIndex(p => p.id === user.id) + 1}
+                    </Text>
+                    <Text style={styles.profileStatLabel}>Rank</Text>
+                  </View>
                 </View>
-                <View style={styles.profileStatItem}>
-                  <Text style={styles.profileStatValue}>
-                    {leaderboardData.findIndex(p => p.id === user.id) + 1}
-                  </Text>
-                  <Text style={styles.profileStatLabel}>Rank</Text>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.settingsLabel}>Display Name</Text>
+                  <TextInput
+                      style={styles.displayNameInput}
+                      value={displayName}
+                      onChangeText={setDisplayName}
+                      placeholder="Enter your display name"
+                      maxLength={15}
+                  />
                 </View>
-              </View>
-              
-              <View style={styles.formSection}>
-                <Text style={styles.settingsLabel}>Display Name</Text>
-                <TextInput
-                  style={styles.displayNameInput}
-                  value={displayName}
-                  onChangeText={setDisplayName}
-                  placeholder="Enter your display name"
-                  maxLength={15}
-                />
-              </View>
-              
-              <View style={styles.formSection}>
-                <Text style={styles.settingsLabel}>Territory Color</Text>
-                <View style={styles.colorPicker}>
-                  {["#4a90e2", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#34495e", "#1abc9c"].map(color => (
-                    <TouchableOpacity
-                      key={color}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color },
-                        selectedColor === color && styles.selectedColorOption
-                      ]}
-                      onPress={() => setSelectedColor(color)}
-                    />
-                  ))}
+
+                <View style={styles.formSection}>
+                  <Text style={styles.settingsLabel}>Your Territory Color</Text>
+                  <View style={styles.colorPreviewContainer}>
+                    <View style={[styles.colorPreviewBox, {backgroundColor: user.color}]}/>
+                    <Text style={styles.colorHexText}>{user.color.toUpperCase()}</Text>
+                  </View>
                 </View>
-              </View>
-              
-              <TouchableOpacity 
-                style={styles.saveButton}
-                onPress={saveChanges}
-              >
-                <Text style={styles.saveButtonText}>Save Changes</Text>
-              </TouchableOpacity>
-            </ScrollView>
+
+                {/*<View style={styles.formSection}>*/}
+                {/*  <Text style={styles.settingsLabel}>Territory Color</Text>*/}
+                {/*  <View style={styles.colorPicker}>*/}
+                {/*    {["#4a90e2", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#34495e", "#1abc9c"].map(color => (*/}
+                {/*      <TouchableOpacity*/}
+                {/*        key={color}*/}
+                {/*        style={[*/}
+                {/*          styles.colorOption,*/}
+                {/*          { backgroundColor: color },*/}
+                {/*          selectedColor === color && styles.selectedColorOption*/}
+                {/*        ]}*/}
+                {/*        onPress={() => setSelectedColor(color)}*/}
+                {/*      />*/}
+                {/*    ))}*/}
+                {/*  </View>*/}
+                {/*</View>*/}
+
+                <TouchableOpacity
+                    style={styles.saveButton}
+                    onPress={saveChanges}
+                >
+                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    style={[styles.saveButton, { backgroundColor: '#e74c3c', marginTop: 10 }]}
+                    onPress={handleLogout}
+                >
+                  <Text style={styles.saveButtonText}>Log Out</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </TouchableOpacity>
           </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+        </Modal>
+    );
+  };
+
+  const AuthScreen = () => {
+    const [usernameInput, setUsernameInput] = useState('');
+    const [passwordInput, setPasswordInput] = useState('');
+
+    const handleLogin = async () => {
+      if (usernameInput.trim() === '' || passwordInput.trim() === '') {
+        Alert.alert("Missing Info", "Please enter both a username and password.");
+        return;
+      }
+
+      const userId = usernameInput.toLowerCase().trim();
+
+      const assignedColor = ["#4a90e2", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#34495e", "#1abc9c"][Math.floor(Math.random() * 7)];
+
+      const loggedInUser = {
+        id: userId,
+        displayName: usernameInput,
+        score: 0,
+        color: assignedColor
+      };
+
+      setUser(loggedInUser);
+      setIsAuthenticated(true);
+      await saveData(loggedInUser, [], []);
+    };
+
+    return (
+        <View style={styles.authContainer}>
+          <Text style={styles.authTitle}>Login</Text>
+          <TextInput
+              style={styles.authInput}
+              placeholder="Username"
+              value={usernameInput}
+              onChangeText={setUsernameInput}
+          />
+          <TextInput
+              style={styles.authInput}
+              placeholder="Password"
+              secureTextEntry
+              value={passwordInput}
+              onChangeText={setPasswordInput}
+          />
+          <TouchableOpacity style={styles.authButton} onPress={handleLogin}>
+            <Text style={styles.authButtonText}>Login</Text>
+          </TouchableOpacity>
+        </View>
     );
   };
 
   // Render main app
+  // Render main app
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
-      
-      <View style={styles.container}>
-        {/* Map View */}
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          initialRegion={region}
-          onRegionChangeComplete={setRegion}
-          showsUserLocation={true}
-          followsUserLocation={isRecording}
-        >
-          {/* Territory Polygons */}
-          {territories.map((territory) => (
-            <Polygon
-              key={territory.id}
-              coordinates={territory.path}
-              strokeColor={territory.color}
-              fillColor={`${territory.color}80`} // 50% transparency
-              strokeWidth={2}
-            />
-          ))}
-          
-          {/* Current Path Tracking */}
-          {isRecording && recordedPath.length > 1 && (
-            <Polygon
-              coordinates={recordedPath}
-              strokeColor={user.color}
-              fillColor={`${user.color}40`} // 25% transparency
-              strokeWidth={2}
-            />
-          )}
-        </MapView>
-        
-        {/* Header Controls */}
-        <View style={styles.headerControls}>
-          <TouchableOpacity 
-            style={styles.controlButton}
-            onPress={() => setShowProfileModal(true)}
-          >
-            <View style={styles.buttonInner}>
-              <FontAwesome name="user" size={20} color="#fff" />
-            </View>
-          </TouchableOpacity>
-          
-          <View style={styles.scoreDisplay}>
-            <View style={styles.scoreIcon}>
-              <FontAwesome name="star" size={16} color="#f1c40f" />
-            </View>
-            <Text style={styles.scoreText}>{user.score}</Text>
-          </View>
-          
-          <TouchableOpacity 
-            style={styles.controlButton}
-            onPress={() => setShowLeaderboard(true)}
-          >
-          <View style={styles.buttonInner}>
-              <FontAwesome name="trophy" size={20} color="#fff" />
-            </View>
-          </TouchableOpacity>
-        </View>
-        
-        {/* Location accuracy indicator */}
-        {currentPosition && (
-          <View style={styles.accuracyContainer}>
-            <View style={styles.accuracyIndicator}>
-              <FontAwesome 
-                name="location-arrow" 
-                size={14} 
-                color={isRecording ? "#e74c3c" : "#2ecc71"} 
-              />
-              <Text style={styles.accuracyText}>
-                {isRecording ? "Recording Path" : "GPS Ready"}
-              </Text>
-            </View>
-          </View>
-        )}
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content"/>
+        {isAuthenticated ? (
+            <View style={styles.container}>
+              {/* Map View */}
+              <MapView
+                  ref={mapRef}
+                  style={styles.map}
+                  initialRegion={region}
+                  onRegionChangeComplete={setRegion}
+                  showsUserLocation={true}
+                  followsUserLocation={isRecording}
+              >
+                {/* Territory Polygons */}
+                {territories.map((territory) => (
+                    <Polygon
+                        key={territory.id}
+                        coordinates={territory.path}
+                        strokeColor={territory.color}
+                        fillColor={`${territory.color}80`}
+                        strokeWidth={2}
+                    />
+                ))}
 
-        {/* Capture Button */}
-        <View style={styles.captureContainer}>
-          {!isRecording ? (
-            <TouchableOpacity 
-              style={styles.captureButton}
-              onPress={startCapture}
-            >
-              <View style={styles.captureButtonInner}>
-                <FontAwesome name="map-marker" size={28} color="white" />
+                {/* Current Path Tracking */}
+                {isRecording && recordedPath.length > 1 && (
+                    <Polygon
+                        coordinates={recordedPath}
+                        strokeColor={user.color}
+                        fillColor={`${user.color}40`}
+                        strokeWidth={2}
+                    />
+                )}
+              </MapView>
+
+              {/* All other UI parts: header, capture button, territory list, modals */}
+              {/* Header Controls */}
+              <View style={styles.headerControls}>
+                <TouchableOpacity
+                    style={styles.controlButton}
+                    onPress={() => setShowProfileModal(true)}
+                >
+                  <View style={styles.buttonInner}>
+                    <FontAwesome name="user" size={20} color="#fff" />
+                  </View>
+                </TouchableOpacity>
+
+                <View style={styles.scoreDisplay}>
+                  <View style={styles.scoreIcon}>
+                    <FontAwesome name="star" size={16} color="#f1c40f" />
+                  </View>
+                  <Text style={styles.scoreText}>{user.score}</Text>
+                </View>
+
+                <TouchableOpacity
+                    style={styles.controlButton}
+                    onPress={() => setShowLeaderboard(true)}
+                >
+                  <View style={styles.buttonInner}>
+                    <FontAwesome name="trophy" size={20} color="#fff" />
+                  </View>
+                </TouchableOpacity>
               </View>
-              <Text style={styles.captureButtonText}>Start Capturing</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity 
-              style={[styles.captureButton, styles.stopButton]}
-              onPress={stopCapture}
-            >
-              <View style={styles.captureButtonInner}>
-                <FontAwesome name="stop-circle" size={28} color="white" />
+
+              {/* Capture Button */}
+              <View style={styles.captureContainer}>
+                {!isRecording ? (
+                    <TouchableOpacity style={styles.captureButton} onPress={startCapture}>
+                      <View style={styles.captureButtonInner}>
+                        <FontAwesome name="map-marker" size={28} color="white" />
+                      </View>
+                      <Text style={styles.captureButtonText}>Start Capturing</Text>
+                    </TouchableOpacity>
+                ) : (
+                    <TouchableOpacity style={[styles.captureButton, styles.stopButton]} onPress={stopCapture}>
+                      <View style={styles.captureButtonInner}>
+                        <FontAwesome name="stop-circle" size={28} color="white" />
+                      </View>
+                      <Text style={styles.captureButtonText}>Finish Territory</Text>
+                    </TouchableOpacity>
+                )}
+
+                {isRecording && recordedPath.length > 0 && (
+                    <View style={styles.captureStats}>
+                      <Text style={styles.captureStatsText}>
+                        Points: {Math.floor(calculatePolygonArea(recordedPath) / 100)} •
+                        Vertices: {recordedPath.length}
+                      </Text>
+                    </View>
+                )}
               </View>
-              <Text style={styles.captureButtonText}>Finish Territory</Text>
-            </TouchableOpacity>
-          )}
-          
-          {isRecording && recordedPath.length > 0 && (
-            <View style={styles.captureStats}>
-              <Text style={styles.captureStatsText}>
-                Points: {Math.floor(calculatePolygonArea(recordedPath) / 100)} • 
-                Vertices: {recordedPath.length}
-              </Text>
+
+              {/* Territory List */}
+              {/* Territory List */}
+              <View style={styles.territoryListContainer}>
+                <View style={styles.territoryListHeader}>
+                  <Text style={styles.territoryListTitle}>Territories</Text>
+                  <View style={styles.territoryFilter}>
+                    <TouchableOpacity
+                        style={territoryFilter === "all" ? styles.filterButtonActive : styles.filterButton}
+                        onPress={() => setTerritoryFilter("all")}
+                    >
+                      <Text style={territoryFilter === "all" ? styles.filterButtonActiveText : styles.filterButtonText}>
+                        All
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={territoryFilter === "mine" ? styles.filterButtonActive : styles.filterButton}
+                        onPress={() => setTerritoryFilter("mine")}
+                    >
+                      <Text style={territoryFilter === "mine" ? styles.filterButtonActiveText : styles.filterButtonText}>
+                        Mine
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {territories.length === 0 ? (
+                    <View style={styles.emptyTerritoriesContainer}>
+                      <FontAwesome name="map-o" size={36} color="#ccc" />
+                      <Text style={styles.emptyTerritoriesText}>No territories captured yet.</Text>
+                      <Text style={styles.emptyTerritoriesSubtext}>Start by capturing an area!</Text>
+                    </View>
+                ) : (
+                    <FlatList
+                        data={filteredTerritories}
+                        renderItem={({ item }) => <TerritoryItem item={item} />}
+                        keyExtractor={(item) => item.id}
+                        horizontal={true}
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.territoryList}
+                    />
+                )}
+              </View> {/* ✅ Close territory list container here */}
+
+              <LeaderboardModal/>
+              <ProfileModal/>
             </View>
-          )}
-        </View>
-        
-        {/* Territory List Partial View */}
-        <View style={styles.territoryListContainer}>
-          <View style={styles.territoryListHeader}>
-            <Text style={styles.territoryListTitle}>Territories</Text>
-            <View style={styles.territoryFilter}>
-              <TouchableOpacity style={styles.filterButton}>
-                <Text style={styles.filterButtonActive}>All</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.filterButton}>
-                <Text style={styles.filterButtonText}>Mine</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          
-          {territories.length === 0 ? (
-            <View style={styles.emptyTerritoriesContainer}>
-              <FontAwesome name="map-o" size={36} color="#ccc" />
-              <Text style={styles.emptyTerritoriesText}>
-                No territories captured yet.
-              </Text>
-              <Text style={styles.emptyTerritoriesSubtext}>
-                Start by capturing an area!
-              </Text>
-            </View>
-          ) : (
-            <FlatList
-              data={territories}
-              renderItem={({ item }) => <TerritoryItem item={item} />}
-              keyExtractor={(item) => item.id}
-              horizontal={true}
-              showsHorizontalScrollIndicator={false}
-              style={styles.territoryList}
-            />
-          )}
-        </View>
-        
-        {/* Modals */}
-        <LeaderboardModal />
-        <ProfileModal />
-      </View>
-    </SafeAreaView>
+        ) : (
+            <AuthScreen/>
+        )}
+      </SafeAreaView>
   );
 }
 
@@ -1092,6 +1230,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 5,
     paddingHorizontal: 12,
+  },
+  filterButtonActiveText: {
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: 'bold',
   },
   territoryList: {
     paddingHorizontal: 15,
@@ -1407,6 +1550,56 @@ const styles = StyleSheet.create({
   },
   saveButtonText: {
     color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  // 👇 Paste this block here
+  colorPreviewContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 5,
+  },
+  colorPreviewBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  colorHexText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  authContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f5f6fa',
+  },
+  authTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
+  },
+  authInput: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 15,
+    backgroundColor: '#fff',
+  },
+  authButton: {
+    backgroundColor: '#2ecc71',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+  },
+  authButtonText: {
+    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
