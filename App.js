@@ -20,15 +20,15 @@ import { FontAwesome } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Working on getting this from a backend
-const USERNAME = "Jfranco"; 
+const DEFAULT_USERNAME = "guest" + Math.floor(Math.random() * 10000);
 
 export default function App() {
   // State variables
   const [user, setUser] = useState({
-    id: USERNAME,
+    id: DEFAULT_USERNAME,
     displayName: "Player1",
     score: 0,
-    color: "#4a90e2" // Default territory color
+    color: "#4a90e2"
   });
   const [currentPosition, setCurrentPosition] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -39,7 +39,7 @@ export default function App() {
   const [leaderboardData, setLeaderboardData] = useState([
     { id: "player1", displayName: "GeoMaster", score: 1250, territories: 5 },
     { id: "player2", displayName: "WalkingKing", score: 980, territories: 3 },
-    { id: USERNAME, displayName: "Player1", score: 450, territories: 2 },
+    { id: DEFAULT_USERNAME, displayName: "Player1", score: 450, territories: 2 },
     { id: "player3", displayName: "AreaHunter", score: 420, territories: 1 }
   ]);
   const [locationPermission, setLocationPermission] = useState(null);
@@ -175,7 +175,16 @@ export default function App() {
     // If the end point is not close to the start point, add the start point to close the polygon
     const startPoint = recordedPath[0];
     const endPoint = recordedPath[recordedPath.length - 1];
-    
+
+    // If the end point is not close enough to the start point, close the polygon
+    if (
+        startPoint.latitude !== endPoint.latitude ||
+        startPoint.longitude !== endPoint.longitude
+    ) {
+      finalPath.push(startPoint);
+    }
+
+
     // Calculate area of the polygon
     const area = calculatePolygonArea(finalPath);
     const areaInSquareMeters = Math.abs(area);
@@ -267,9 +276,22 @@ export default function App() {
         territories,
         leaderboard: leaderboardData
       };
-      
+
+      // Save locally
       await AsyncStorage.setItem('geoconquest_data', JSON.stringify(data));
-      console.log("Data saved successfully");
+      console.log("Data saved locally");
+
+      // Save to server using professor's URL
+      await fetch(`https://mec402.boisestate.edu/csclasses/cs402/project/savejson.php?user=${user.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+
+      console.log("Data saved to server");
+
     } catch (error) {
       console.error("Error saving data:", error);
     }
@@ -278,18 +300,34 @@ export default function App() {
   // Load saved data from storage
   const loadSavedData = async () => {
     try {
+      // Try loading from server first
+      const response = await fetch(`https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${user.id}`);
+      const text = await response.text();
+
+      try {
+        const cloudData = JSON.parse(text);
+
+        if (cloudData) {
+          setUser(cloudData.user || user);
+          setTerritories(cloudData.territories || []);
+          setLeaderboardData(cloudData.leaderboard || leaderboardData);
+          console.log("Loaded data from server.");
+        }
+      } catch (err) {
+        console.error("Server response is not valid JSON:", text);
+      }
+
+      // Also attempt to load local backup
       const savedData = await AsyncStorage.getItem('geoconquest_data');
-      
       if (savedData) {
         const parsedData = JSON.parse(savedData);
         setUser(parsedData.user || user);
         setTerritories(parsedData.territories || []);
         setLeaderboardData(parsedData.leaderboard || leaderboardData);
-        
-        console.log("Data loaded successfully");
+        console.log("Loaded local backup.");
       }
     } catch (error) {
-      console.error("Error loading saved data:", error);
+      console.error("Error loading saved or server data:", error);
     }
   };
 
@@ -597,6 +635,7 @@ export default function App() {
   const ProfileModal = () => {
     // Local state for form inputs to prevent modal from closing
     const [displayName, setDisplayName] = useState(user.displayName);
+    const [id, setId] = useState(user.id);
     const [selectedColor, setSelectedColor] = useState(user.color);
     
     // Save changes function
