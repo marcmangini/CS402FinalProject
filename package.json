@@ -8,15 +8,16 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@expo/vector-icons": "^14.0.2",
+    "@react-native-async-storage/async-storage": "^1.23.1",
     "expo": "~52.0.43",
+    "expo-location": "~18.0.10",
     "expo-status-bar": "~2.0.1",
+    "firebase": "^11.6.1",
     "react": "18.3.1",
     "react-native": "0.76.9",
-    "expo-location": "~18.0.10",
     "react-native-maps": "1.18.0",
-    "@expo/vector-icons": "^14.0.2",
-    "react-native-paper": "4.9.2",
-    "@react-native-async-storage/async-storage": "1.23.1"
+    "react-native-paper": "4.9.2"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0"

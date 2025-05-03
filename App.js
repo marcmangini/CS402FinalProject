@@ -18,10 +18,20 @@ import MapView, { Marker, Polygon } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { FontAwesome } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { auth } from './firebaseConfig';
+import { db } from './firebaseConfig'; // Firestore
+import { doc, setDoc } from 'firebase/firestore'; // Firestore functions
+import { onAuthStateChanged } from 'firebase/auth'; // just to confirm it's wired
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+
+
+onAuthStateChanged(auth, (user) => {
+  console.log('Firebase is working. Current user:', user);
+});
 
 // Working on getting this from a backend
-const DEFAULT_USERNAME = "guest" + Math.floor(Math.random() * 10000);
-console.log("User ID:", DEFAULT_USERNAME);
+const generateGuestID = () => "guest" + Math.floor(10000 + Math.random() * 90000);
 function generateUniqueColor(seedString) {
   let hash = 0;
   for (let i = 0; i < seedString.length; i++) {
@@ -33,6 +43,22 @@ function generateUniqueColor(seedString) {
   const l = 55 + (Math.abs(hash) % 10);  // 55–65%
 
   return `hsl(${h}, ${s}%, ${l}%)`;
+}
+
+function hslToRgba(hslStr) {
+  const result = /hsl\\((\\d+),(\\d+)%\\,(\\d+)%\\)/.exec(hslStr);
+  if (!result) return 'rgba(0,0,0,0.3)';
+  const h = parseInt(result[1], 10);
+  const s = parseInt(result[2], 10) / 100;
+  const l = parseInt(result[3], 10) / 100;
+
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color);
+  };
+  return `rgba(${f(0)},${f(8)},${f(4)},0.4)`; // You can tweak alpha here
 }
 
 export default function App() {
@@ -83,16 +109,68 @@ export default function App() {
   // Load initial data when component mounts
   useEffect(() => {
     const tryAutoLogin = async () => {
-      const saved = await AsyncStorage.getItem('geoconquest_data');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.user) {
-          setUser(parsed.user);
+      let didLogin = false;
+
+      // 1. Firebase auto-login check
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (firebaseUser) {
+          const userId = firebaseUser.uid;
+          const color = generateUniqueColor(userId);
+          const displayName = firebaseUser.email?.split('@')[0] ?? 'Player1';
+
+          setUser({ id: userId, displayName, score: 0, color });
+          await setDoc(doc(db, 'users', userId), {
+            displayName,
+            score: 0,
+            color
+          }, { merge: true });
+
           setIsAuthenticated(true);
+          didLogin = true;
+          console.log("✅ Logged in via Firebase:", displayName);
+
+          await requestLocationPermission();
+          await loadSavedData();
+        }
+      });
+
+      // Wait briefly to allow Firebase to trigger if it's going to
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay
+
+      if (!didLogin) {
+        // 2. AsyncStorage login check
+        const saved = await AsyncStorage.getItem('geoconquest_data');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.user) {
+            setUser(parsed.user);
+            setIsAuthenticated(true);
+            didLogin = true;
+            console.log("✅ Logged in from AsyncStorage:", parsed.user.displayName);
+          }
         }
       }
+
+      if (!didLogin) {
+        // 3. Guest fallback
+        const guestId = generateGuestID();
+        const guestColor = generateUniqueColor(guestId);
+
+        setUser({ id: guestId, displayName: "Guest", score: 0, color: guestColor });
+        await setDoc(doc(db, 'users', guestId), {
+          displayName: "Guest",
+          score: 0,
+          color: guestColor
+        }, { merge: true });
+
+        setIsAuthenticated(true);
+        console.log("🟡 Logged in as Guest:", guestId);
+      }
+
       await requestLocationPermission();
-      await loadSavedData(); // You might want to load again after login
+      await loadSavedData();
+
+      return unsubscribe;
     };
 
     tryAutoLogin();
@@ -102,6 +180,47 @@ export default function App() {
         clearInterval(locationInterval.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    const saveScoreToFirestore = async () => {
+      if (user?.id && isAuthenticated) {
+        try {
+          await setDoc(doc(db, 'users', user.id), {
+            score: user.score
+          }, { merge: true });
+          console.log("✅ Score updated in Firestore:", user.score);
+        } catch (error) {
+          console.error("❌ Failed to update score:", error);
+        }
+      }
+    };
+
+    saveScoreToFirestore();
+  }, [user?.score]);
+
+  useEffect(() => {
+    const leaderboardQuery = query(
+        collection(db, 'users'),
+        orderBy('score', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(leaderboardQuery, (snapshot) => {
+      const leaderboard = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          displayName: data.displayName || 'Anonymous',
+          score: data.score || 0,
+          territories: data.territories || 0
+        };
+      });
+
+      setLeaderboardData(leaderboard);
+      console.log("📊 Leaderboard updated:", leaderboard);
+    });
+
+    return () => unsubscribe(); // Clean up on unmount
   }, []);
 
   // Request location permission
@@ -167,7 +286,18 @@ export default function App() {
         setCurrentPosition({latitude, longitude});
 
         // Add point to path if recording
-        setRecordedPath(prevPath => [...prevPath, {latitude, longitude}]);
+        setRecordedPath(prevPath => {
+          if (prevPath.length === 0) return [{latitude, longitude}];
+
+          const lastPoint = prevPath[prevPath.length - 1];
+          const distance = haversineDistance(lastPoint, {latitude, longitude});
+
+          if (distance >= 5) {
+            return [...prevPath, {latitude, longitude}];
+          } else {
+            return prevPath; // ignore jittery point
+          }
+        });
 
       } catch (error) {
         console.error("Error tracking location:", error);
@@ -181,7 +311,7 @@ export default function App() {
   };
 
   // Stop territory capture
-  const stopCapture = () => {
+  const stopCapture = async () => {
     // Stop tracking interval
     if (locationInterval.current) {
       clearInterval(locationInterval.current);
@@ -234,49 +364,75 @@ export default function App() {
     };
 
     // Add territory and update user score
-    setTerritories(prev => [...prev, newTerritory]);
+    const newScore = user.score + points;
+    const updatedTerritories = [...territories, newTerritory];
+    const userTerritories = updatedTerritories.filter(t => t.owner === user.id);  // ✅ Move this up
+
+    setTerritories(updatedTerritories);
     setUser(prev => ({
       ...prev,
-      score: prev.score + points
+      score: newScore
     }));
 
-    // Update leaderboard
+// ✅ Save updated score and territory count to Firestore
+    await setDoc(doc(db, 'users', user.id), {
+      score: newScore,
+      territories: userTerritories.length,
+      displayName: user.displayName,
+      color: user.color
+    }, { merge: true });
+
+// Update leaderboard
     updateLeaderboard(points);
 
-    // Save data
+// Save data
     saveData();
 
     Alert.alert(
         "Territory Captured!",
         `You've claimed ${areaInSquareMeters.toFixed(0)} sq meters worth ${points} points!`
     );
+
   };
 
   // Calculate polygon area
   const calculatePolygonArea = (vertices) => {
-    // Convert lat/long to meters using  approximation
-    // This is a simplified calculation and not perfect for large areas
-    const earthRadius = 6371000; // meters
+    if (vertices.length < 3) return 0;
 
-    const metersVertices = vertices.map(point => {
-      const latRad = (point.latitude * Math.PI) / 180;
-      const lngRad = (point.longitude * Math.PI) / 180;
-
-      // Simple approximation - not accurate for large distances
-      const x = earthRadius * lngRad * Math.cos(latRad);
-      const y = earthRadius * latRad;
-
-      return {x, y};
-    });
+    const toRadians = deg => (deg * Math.PI) / 180;
+    const earthRadius = 6378137; // in meters (WGS-84)
 
     let area = 0;
-    for (let i = 0, j = metersVertices.length - 1; i < metersVertices.length; j = i++) {
-      area += (metersVertices[j].x + metersVertices[i].x) *
-          (metersVertices[j].y - metersVertices[i].y);
+    for (let i = 0; i < vertices.length; i++) {
+      const { latitude: lat1, longitude: lon1 } = vertices[i];
+      const { latitude: lat2, longitude: lon2 } = vertices[(i + 1) % vertices.length];
+
+      area += toRadians(lon2 - lon1) *
+          (2 + Math.sin(toRadians(lat1)) + Math.sin(toRadians(lat2)));
     }
 
-    return area / 2;
+    area = area * earthRadius * earthRadius / 2.0;
+    return Math.abs(area); // in square meters
   };
+
+  // Calculate distance between two lat/lng points in meters
+  const haversineDistance = (point1, point2) => {
+    const R = 6371000; // Earth radius in meters
+    const toRad = deg => (deg * Math.PI) / 180;
+
+    const dLat = toRad(point2.latitude - point1.latitude);
+    const dLon = toRad(point2.longitude - point1.longitude);
+
+    const lat1 = toRad(point1.latitude);
+    const lat2 = toRad(point2.latitude);
+
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.sin(dLon/2) * Math.sin(dLon/2) * Math.cos(lat1) * Math.cos(lat2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+    return R * c;
+  };
+
 
   // Update leaderboard with new points
   const updateLeaderboard = (points) => {
@@ -331,74 +487,68 @@ export default function App() {
     try {
       // 1. Try to load current user's data from server
       let currentUserData = null;
+
       try {
         const response = await fetch(
             `https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${user.id}`
         );
+        const text = await response.text();
 
-        if (!response.ok) {
-          throw new Error(`Server returned ${response.status}`);
+        if (!response.ok || !text || text.includes("Unable to open file!")) {
+          console.warn("⚠️ No server file found. Creating a default file...");
+
+          const defaultData = {
+            user: {
+              id: user.id,
+              name: user.name || "New User"
+            },
+            territories: [],
+            profile: {},
+          };
+
+          // Create the default file on the server
+          await fetch(
+              `https://mec402.boisestate.edu/csclasses/cs402/project/savejson.php?user=${encodeURIComponent(user.id)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(defaultData),
+              }
+          );
+
+          console.log("✅ Default user file created for:", user.id);
+          currentUserData = defaultData;
+        } else {
+          try {
+            currentUserData = JSON.parse(text);
+          } catch (err) {
+            console.error("❌ Failed to parse server data:", err, "Raw text:", text);
+            throw new Error("Invalid JSON from server.");
+          }
         }
-
-        const responseText = await response.text();
-
-        if (!responseText || responseText.trim() === '') {
-          console.log("Received empty response from server");
-          throw new Error("Empty response from server");
-        }
-
-        currentUserData = JSON.parse(responseText);
       } catch (serverError) {
-        console.warn("Failed to load server data:", serverError);
-        // Fall back to local data
+        console.warn("⚠️ Failed to load from server:", serverError);
+
+        // Fall back to local storage
         try {
           const localData = await AsyncStorage.getItem('geoconquest_data');
           if (localData) {
             currentUserData = JSON.parse(localData);
-            console.log("Loaded data from local storage");
+            console.log("✅ Loaded data from local storage");
+          } else {
+            console.warn("⚠️ No local data found");
           }
         } catch (localError) {
-          console.error("Failed to load local data:", localError);
+          console.error("❌ Failed to load local data:", localError);
         }
       }
 
-      // 2. Process the loaded data
-      if (currentUserData) {
-        setUser(currentUserData.user || user);
-        setTerritories(currentUserData.territories || []);
-        setLeaderboardData(currentUserData.leaderboard || leaderboardData);
+      // ✅ Now use currentUserData safely
+      if (currentUserData?.territories?.length > 0) {
+        setTerritories(currentUserData.territories);
       }
-
-      // 3. Load additional territory data if needed
-      const otherUsers = Array.isArray(currentUserData?.leaderboard)
-          ? currentUserData.leaderboard
-              .map(p => p.id)
-              .filter(id => id && id !== user.id)
-          : [];
-
-      for (const uid of otherUsers) {
-        try {
-          const res = await fetch(
-              `https://mec402.boisestate.edu/csclasses/cs402/project/loadjson.php?user=${uid}`
-          );
-          const text = await res.text();
-          if (text && text.trim() !== '') {
-            const parsed = JSON.parse(text);
-            if (parsed?.territories?.length > 0) {
-              setTerritories(prev => [...prev, ...parsed.territories]);
-            }
-          }
-        } catch (err) {
-          console.warn(`Failed to load data for user ${uid}:`, err);
-        }
-      }
-    } catch (error) {
-      console.error("Error in loadSavedData:", error);
-      // You might want to show an alert to the user here
-      Alert.alert(
-          "Data Loading Error",
-          "Couldn't load game data. Some features might not work properly."
-      );
+    } catch (err) {
+      console.error("❌ loadSavedData failed:", err);
     }
   };
 
@@ -457,6 +607,19 @@ export default function App() {
             return t;
           })
       );
+
+      // Transfer territory points to attacker
+      const updatedLeaderboard = leaderboardData.map(entry => {
+        if (entry.id === user.id) {
+          return { ...entry, score: entry.score + territory.points, territoryCount: (entry.territoryCount || 0) + 1 };
+        } else if (entry.id === territory.ownerId) {
+          return { ...entry, score: Math.max(0, entry.score - territory.points), territoryCount: Math.max(0, (entry.territoryCount || 1) - 1) };
+        } else {
+          return entry;
+        }
+      });
+      setLeaderboardData(updatedLeaderboard);
+      saveData(user, territories, updatedLeaderboard);
 
       Alert.alert(
           "Victory!",
@@ -708,28 +871,37 @@ export default function App() {
       });
     };
     // Save changes function
-    const saveChanges = () => {
+    const saveChanges = async () => {
       const updatedUser = {
         ...user,
         displayName: displayName
-        // No longer updating color
       };
 
       const updatedLeaderboard = leaderboardData.map(player =>
           player.id === user.id
-              ? {...player, displayName: displayName}
+              ? { ...player, displayName: displayName }
               : player
       );
 
       const updatedTerritories = territories.map(t =>
           t.owner === user.id
-              ? {...t, ownerName: displayName}
+              ? { ...t, ownerName: displayName }
               : t
       );
 
       setUser(updatedUser);
       setLeaderboardData(updatedLeaderboard);
       setTerritories(updatedTerritories);
+
+      // 🔥 Save updated displayName to Firestore
+      try {
+        await setDoc(doc(db, 'users', user.id), {
+          displayName: displayName
+        }, { merge: true });
+        console.log("✅ Display name synced to Firestore");
+      } catch (error) {
+        console.error("❌ Failed to sync display name:", error);
+      }
 
       saveData(updatedUser, updatedTerritories, updatedLeaderboard);
       setShowProfileModal(false);
@@ -797,11 +969,14 @@ export default function App() {
                 </View>
 
                 <View style={styles.formSection}>
-                  <Text style={styles.settingsLabel}>Your Territory Color</Text>
+                  <Text style={styles.settingsLabel}>Assigned Territory Color</Text>
                   <View style={styles.colorPreviewContainer}>
-                    <View style={[styles.colorPreviewBox, {backgroundColor: user.color}]}/>
+                    <View style={[styles.colorPreviewBox, { backgroundColor: user.color }]} />
                     <Text style={styles.colorHexText}>{user.color.toUpperCase()}</Text>
                   </View>
+                  <Text style={{ fontSize: 12, color: '#888', marginTop: 5 }}>
+                    This color is assigned automatically and cannot be changed.
+                  </Text>
                 </View>
 
                 {/*<View style={styles.formSection}>*/}
@@ -844,50 +1019,163 @@ export default function App() {
     const [usernameInput, setUsernameInput] = useState('');
     const [passwordInput, setPasswordInput] = useState('');
 
+    // const handleLogin = async () => {
+    //   const email = usernameInput.trim().toLowerCase() + "@myapp.com";
+    //   const password = passwordInput.trim();
+    //
+    //   if (usernameInput === '' || password === '') {
+    //     Alert.alert("Missing Info", "Please enter both a username and password.");
+    //     return;
+    //   }
+    //
+    //   console.log("🚀 Attempting login for:", email);
+    //
+    //   try {
+    //     const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    //     console.log("✅ Login success:", userCredential);
+    //
+    //     const loggedInUser = userCredential.user;
+    //     const userId = loggedInUser.uid;
+    //     const displayName = loggedInUser.email?.split('@')[0] || 'Player1';
+    //     const color = generateUniqueColor(userId);
+    //
+    //     setUser({
+    //       id: userId,
+    //       displayName,
+    //       score: 0,
+    //       color,
+    //     });
+    //     setIsAuthenticated(true);
+    //   } catch (signInError) {
+    //     console.log("❌ Login failed code:", signInError.code);
+    //     console.log("❌ Login failed message:", signInError.message);
+    //
+    //     if (signInError.code === 'auth/user-not-found') {
+    //       console.log("🔁 Trying to register new user...");
+    //       try {
+    //         const newUser = await createUserWithEmailAndPassword(auth, email, password);
+    //         console.log("✅ Registration success:", newUser);
+    //
+    //         const userId = newUser.user.uid;
+    //         const displayName = newUser.user.email?.split('@')[0] || 'Player1';
+    //         const color = generateUniqueColor(userId);
+    //
+    //         setUser({
+    //           id: userId,
+    //           displayName,
+    //           score: 0,
+    //           color,
+    //         });
+    //         setIsAuthenticated(true);
+    //       } catch (createError) {
+    //         console.error("❌ Registration failed:", createError.message);
+    //         Alert.alert("Registration Error", createError.message);
+    //       }
+    //     } else {
+    //       console.error("❌ Login error:", signInError.message);
+    //       Alert.alert("Login Error", signInError.message);
+    //     }
+    //   }
+    // };
+
     const handleLogin = async () => {
-      if (usernameInput.trim() === '' || passwordInput.trim() === '') {
+      const email = usernameInput.trim().toLowerCase();
+      const password = passwordInput.trim();
+
+      if (usernameInput === '' || password === '') {
         Alert.alert("Missing Info", "Please enter both a username and password.");
         return;
       }
 
-      const userId = usernameInput.toLowerCase().trim();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        Alert.alert("Invalid Email", "Please enter a valid email address.");
+        return;
+      }
 
-      const assignedColor = ["#4a90e2", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#34495e", "#1abc9c"][Math.floor(Math.random() * 7)];
+      try {
+        // First try to sign in
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        console.log("✅ Login success:", userCredential);
 
-      const loggedInUser = {
-        id: userId,
-        displayName: usernameInput,
-        score: 0,
-        color: assignedColor
-      };
+        const userId = userCredential.user.uid;
+        const displayName = userCredential.user.email?.split('@')[0] || 'Player1';
+        const color = generateUniqueColor(userId);
 
-      setUser(loggedInUser);
-      setIsAuthenticated(true);
-      await saveData(loggedInUser, [], []);
+        const userDoc = await getDoc(doc(db, 'users', userId));
+        const storedScore = userDoc.exists() && userDoc.data().score ? userDoc.data().score : 0;
+
+        setUser({
+          id: userId,
+          displayName,
+          score: storedScore,
+          color
+        });
+
+      } catch (signInError) {
+        if (signInError.code === 'auth/user-not-found') {
+          // Try registering instead
+          try {
+            const newUser = await createUserWithEmailAndPassword(auth, email, password);
+            console.log("✅ Registered new user:", newUser);
+
+            const userId = newUser.user.uid;
+            const displayName = newUser.user.email?.split('@')[0] || 'Player1';
+            const color = generateUniqueColor(userId);
+
+            const userDoc = await getDoc(doc(db, 'users', userId));
+            const storedScore = userDoc.exists() && userDoc.data().score ? userDoc.data().score : 0;
+
+            setUser({
+              id: userId,
+              displayName,
+              score: storedScore,
+              color
+            });
+            // Write to Firestore
+            await setDoc(doc(db, 'users', userId), {
+              displayName: displayName,
+              email: email,
+              joined: new Date().toISOString(),
+              score: 0,
+              color: color
+            }, { merge: true });
+
+            setIsAuthenticated(true);
+
+          } catch (registerError) {
+            console.error("❌ Registration failed:", registerError.message);
+            Alert.alert("Registration Error", registerError.message);
+          }
+        } else {
+          console.error("❌ Login failed:", signInError.message);
+          Alert.alert("Login Error", signInError.message);
+        }
+      }
     };
 
     return (
         <View style={styles.authContainer}>
-          <Text style={styles.authTitle}>Login</Text>
+          <Text style={styles.authTitle}>Geo Capture Login</Text>
           <TextInput
               style={styles.authInput}
-              placeholder="Username"
+              placeholder="Email"
               value={usernameInput}
               onChangeText={setUsernameInput}
           />
           <TextInput
               style={styles.authInput}
               placeholder="Password"
-              secureTextEntry
               value={passwordInput}
               onChangeText={setPasswordInput}
+              secureTextEntry
           />
           <TouchableOpacity style={styles.authButton} onPress={handleLogin}>
-            <Text style={styles.authButtonText}>Login</Text>
+            <Text style={styles.authButtonText}>Login / Register</Text>
           </TouchableOpacity>
         </View>
     );
-  };
+  }; // ✅ This closes the AuthScreen function
 
   // Render main app
   // Render main app
@@ -911,18 +1199,17 @@ export default function App() {
                         key={territory.id}
                         coordinates={territory.path}
                         strokeColor={territory.color}
-                        fillColor={`${territory.color}80`}
+                        fillColor={hslToRgba(territory.color)}
                         strokeWidth={2}
                     />
                 ))}
 
                 {/* Current Path Tracking */}
                 {isRecording && recordedPath.length > 1 && (
-                    <Polygon
+                    <MapView.Polyline
                         coordinates={recordedPath}
                         strokeColor={user.color}
-                        fillColor={`${user.color}40`}
-                        strokeWidth={2}
+                        strokeWidth={3}
                     />
                 )}
               </MapView>
