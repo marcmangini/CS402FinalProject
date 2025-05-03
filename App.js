@@ -121,9 +121,9 @@ export default function App() {
           const color = generateUniqueColor(userId);
           const displayName = firebaseUser.email?.split('@')[0] ?? 'Player1';
 
-          setUser({ id: userId, displayName, score: 0, color });
+          setUser({ id: userId, displayName: displayName || "Unnamed", score: 0, color });
           await updateDoc(doc(db, 'users', userId), {
-            displayName,
+            displayName: displayName || "Unnamed",
             score: 0,
             color
           });
@@ -738,13 +738,8 @@ export default function App() {
                     size={12}
                     color={item.owner === user.id ? "#2ecc71" : "#7f8c8d"}
                 />
-                <Text
-                    style={[
-                      styles.territoryItemOwner,
-                      item.owner === user.id ? styles.ownTerritoryText : {}
-                    ]}
-                >
-                  {item.owner === user.id ? "You" : item.ownerName}
+                <Text style={[styles.territoryItemOwner, item.owner === user.id ? styles.ownTerritoryText : {}]}>
+                  {item.owner === user.id ? "You" : (item.ownerName || "Unknown")}
                 </Text>
               </View>
 
@@ -850,7 +845,7 @@ export default function App() {
                       </View>
 
                       <View style={styles.leaderboardUserInfo}>
-                        <Text style={styles.leaderboardUsername}>{item.displayName}</Text>
+                        <Text style={styles.leaderboardUsername}>{item.displayName || "Player"}</Text>
                         <Text style={styles.leaderboardDetails}>
                           {item.territories} {item.territories === 1 ? 'territory' : 'territories'}
                         </Text>
@@ -885,39 +880,46 @@ export default function App() {
     };
     // Save changes function
     const saveChanges = async () => {
-      const updatedUser = {
-        ...user,
-        displayName: displayName
-      };
-
-      const updatedLeaderboard = leaderboardData.map(player =>
-          player.id === user.id
-              ? { ...player, displayName: displayName }
-              : player
-      );
-
-      const updatedTerritories = territories.map(t =>
-          t.owner === user.id
-              ? { ...t, ownerName: displayName }
-              : t
-      );
-
-      setUser(updatedUser);
-      setLeaderboardData(updatedLeaderboard);
-      setTerritories(updatedTerritories);
-
-      // 🔥 Save updated displayName to Firestore
       try {
+        const updatedUser = {
+          ...user,
+          displayName: displayName
+        };
+
+        const updatedLeaderboard = leaderboardData.map(player =>
+            player.id === user.id
+                ? { ...player, displayName: displayName }
+                : player
+        );
+
+        const updatedTerritories = territories.map(t =>
+            t.owner === user.id
+                ? { ...t, ownerName: displayName }
+                : t
+        );
+
+        // Local state updates
+        console.log("🔄 Setting updated user:", updatedUser);
+        setUser(updatedUser);
+        setLeaderboardData(updatedLeaderboard);
+        setTerritories(updatedTerritories);
+
+        // Firebase update
         await updateDoc(doc(db, 'users', user.id), {
           displayName: displayName
         });
         console.log("✅ Display name synced to Firestore");
-      } catch (error) {
-        console.error("❌ Failed to sync display name:", error);
-      }
 
-      saveData(updatedUser, updatedTerritories, updatedLeaderboard);
-      setShowProfileModal(false);
+        // Local + remote save (await this!)
+        await saveData(updatedUser, updatedTerritories, updatedLeaderboard);
+
+        // Close modal
+        setShowProfileModal(false);
+        console.log("✅ Modal closed after save");
+      } catch (error) {
+        console.error("❌ Error during profile save:", error);
+        Alert.alert("Error", "There was a problem saving your profile. Please try again.");
+      }
     };
 
     return (
@@ -947,7 +949,9 @@ export default function App() {
               <ScrollView showsVerticalScrollIndicator={false}>
                 <View style={styles.profileAvatar}>
                   <View style={styles.avatarCircle}>
-                    <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
+                    <Text style={styles.avatarText}>
+                      {(displayName || "P").charAt(0).toUpperCase()}
+                    </Text>
                   </View>
                 </View>
 
@@ -1120,7 +1124,7 @@ export default function App() {
 
         setUser({
           id: userId,
-          displayName,
+          displayName: displayName || "Unnamed",
           score: storedScore,
           color
         });
@@ -1142,7 +1146,7 @@ export default function App() {
 
             setUser({
               id: userId,
-              displayName,
+              displayName: displayName || "Unnamed",
               score: storedScore,
               color
             });
