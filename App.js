@@ -20,15 +20,18 @@ import { FontAwesome } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth } from './firebaseConfig';
 import { db } from './firebaseConfig'; // Firestore
-import { doc, setDoc } from 'firebase/firestore'; // Firestore functions
 import { onAuthStateChanged } from 'firebase/auth'; // just to confirm it's wired
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { getDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
 
 
 onAuthStateChanged(auth, (user) => {
   console.log('Firebase is working. Current user:', user);
 });
+
+const DEFAULT_USERNAME = "guestUser";
 
 // Working on getting this from a backend
 const generateGuestID = () => "guest" + Math.floor(10000 + Math.random() * 90000);
@@ -46,7 +49,7 @@ function generateUniqueColor(seedString) {
 }
 
 function hslToRgba(hslStr) {
-  const result = /hsl\\((\\d+),(\\d+)%\\,(\\d+)%\\)/.exec(hslStr);
+  const result = /hsl\((\d+),(\d+)%?,\s*(\d+)%?\)/.exec(hslStr);
   if (!result) return 'rgba(0,0,0,0.3)';
   const h = parseInt(result[1], 10);
   const s = parseInt(result[2], 10) / 100;
@@ -119,11 +122,11 @@ export default function App() {
           const displayName = firebaseUser.email?.split('@')[0] ?? 'Player1';
 
           setUser({ id: userId, displayName, score: 0, color });
-          await setDoc(doc(db, 'users', userId), {
+          await updateDoc(doc(db, 'users', userId), {
             displayName,
             score: 0,
             color
-          }, { merge: true });
+          });
 
           setIsAuthenticated(true);
           didLogin = true;
@@ -186,9 +189,9 @@ export default function App() {
     const saveScoreToFirestore = async () => {
       if (user?.id && isAuthenticated) {
         try {
-          await setDoc(doc(db, 'users', user.id), {
+          await updateDoc(doc(db, 'users', user.id), {
             score: user.score
-          }, { merge: true });
+          });
           console.log("✅ Score updated in Firestore:", user.score);
         } catch (error) {
           console.error("❌ Failed to update score:", error);
@@ -266,34 +269,45 @@ export default function App() {
 
   // Start territory capture
   const startCapture = async () => {
+    // ✅ [NEW] Prevent double-start if already recording
+    if (isRecording || locationInterval.current) {
+      Alert.alert("Already Recording", "Territory capture is already in progress.");
+      return;
+    }
+
+    // ✅ [UNCHANGED] Check for permission
     if (locationPermission !== 'granted') {
       Alert.alert("Permission Required", "Location permission is needed to capture territory.");
       return;
     }
 
-    // Reset path
+    // ✅ [UNCHANGED] Reset path and state
     setRecordedPath([]);
     setIsRecording(true);
 
-    // Start tracking location at regular intervals
+    // ✅ [REPLACE YOUR OLD setInterval WITH THIS]
     locationInterval.current = setInterval(async () => {
       try {
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High
         });
 
-        const {latitude, longitude} = location.coords;
-        setCurrentPosition({latitude, longitude});
+        const { latitude, longitude } = location.coords;
+        setCurrentPosition({ latitude, longitude });
 
-        // Add point to path if recording
+        // ✅ [MODIFIED] Only add point if far enough & still recording
         setRecordedPath(prevPath => {
-          if (prevPath.length === 0) return [{latitude, longitude}];
+          if (!isRecording) return prevPath; // just in case
+
+          if (prevPath.length === 0) {
+            return [{ latitude, longitude }];
+          }
 
           const lastPoint = prevPath[prevPath.length - 1];
-          const distance = haversineDistance(lastPoint, {latitude, longitude});
+          const distance = haversineDistance(lastPoint, { latitude, longitude });
 
           if (distance >= 5) {
-            return [...prevPath, {latitude, longitude}];
+            return [...prevPath, { latitude, longitude }];
           } else {
             return prevPath; // ignore jittery point
           }
@@ -302,8 +316,9 @@ export default function App() {
       } catch (error) {
         console.error("Error tracking location:", error);
       }
-    }, 2000); // Update every 2 seconds - adjust based on testing
+    }, 2000); // every 2 sec
 
+    // ✅ [UNCHANGED] Alert user that capture started
     Alert.alert(
         "Territory Capture Started",
         "Walk around the area you want to claim. The app will track your path."
@@ -320,8 +335,11 @@ export default function App() {
 
     setIsRecording(false);
 
-    // Check if we have enough points for a territory
-    if (recordedPath.length < 3) {
+    // Take a snapshot of recordedPath to avoid race conditions
+    const currentPath = [...recordedPath];
+
+// Check if we have enough points
+    if (currentPath.length < 3) {
       Alert.alert(
           "Capture Failed",
           "Not enough points to create a territory. Need at least 3 points."
@@ -329,12 +347,11 @@ export default function App() {
       return;
     }
 
-    // Close the loop if needed
-    let finalPath = [...recordedPath];
+    let finalPath = [...currentPath];
 
-    // If the end point is not close to the start point, add the start point to close the polygon
-    const startPoint = recordedPath[0];
-    const endPoint = recordedPath[recordedPath.length - 1];
+// Safe access now that we’ve confirmed length >= 3
+    const startPoint = currentPath[0];
+    const endPoint = currentPath[currentPath.length - 1];
 
     // If the end point is not close enough to the start point, close the polygon
     if (
@@ -375,12 +392,10 @@ export default function App() {
     }));
 
 // ✅ Save updated score and territory count to Firestore
-    await setDoc(doc(db, 'users', user.id), {
+    await updateDoc(doc(db, 'users', user.id), {
       score: newScore,
-      territories: userTerritories.length,
-      displayName: user.displayName,
-      color: user.color
-    }, { merge: true });
+      territories: userTerritories.length
+    });
 
 // Update leaderboard
     updateLeaderboard(points);
@@ -612,7 +627,7 @@ export default function App() {
       const updatedLeaderboard = leaderboardData.map(entry => {
         if (entry.id === user.id) {
           return { ...entry, score: entry.score + territory.points, territoryCount: (entry.territoryCount || 0) + 1 };
-        } else if (entry.id === territory.ownerId) {
+        } else if (entry.id === territory.owner) {
           return { ...entry, score: Math.max(0, entry.score - territory.points), territoryCount: Math.max(0, (entry.territoryCount || 1) - 1) };
         } else {
           return entry;
@@ -631,8 +646,6 @@ export default function App() {
           "Your challenge was unsuccessful. Try again later!"
       );
     }
-
-    saveData();
   };
 
   // Component for territory item in the list
@@ -895,9 +908,9 @@ export default function App() {
 
       // 🔥 Save updated displayName to Firestore
       try {
-        await setDoc(doc(db, 'users', user.id), {
+        await updateDoc(doc(db, 'users', user.id), {
           displayName: displayName
-        }, { merge: true });
+        });
         console.log("✅ Display name synced to Firestore");
       } catch (error) {
         console.error("❌ Failed to sync display name:", error);
@@ -1111,6 +1124,7 @@ export default function App() {
           score: storedScore,
           color
         });
+        setIsAuthenticated(true);
 
       } catch (signInError) {
         if (signInError.code === 'auth/user-not-found') {
